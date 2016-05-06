@@ -17,7 +17,131 @@
       };
     })
     .factory("resizeImage", ['getResizeArea', function(getResizeArea){
-      return function (origImage, options) {
+      
+      function getAdjustedDimension(width, height, maxWidth, maxHeight) {
+              var height;
+              var width;
+
+              if (width > height) {
+                  if (width > maxWidth) {
+                      height = Math.round(height *= maxWidth / width);
+                      width = maxWidth;
+                  }
+              } else {
+                  if (height > maxHeight) {
+                      width = Math.round(width *= maxHeight / height);
+                      height = maxHeight;
+                  }
+              }
+              return { width: width, height: height };
+          }
+
+          function fixOrientation(image ,orientation, canvas, ctx, width, height, maxWidth, maxHeight)
+          {
+              // Nice description on EXIF orientation handling
+              //http://www.daveperrett.com/articles/2012/07/28/exif-orientation-handling-is-a-ghetto/
+
+              var x = 0;
+              var y = 0;
+              //reset the context tranformation matrix
+              ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+
+              if (orientation == 1 || orientation == 3) {
+                  var dimension = getAdjustedDimension(width, height, maxWidth, maxHeight);
+                  var w = dimension.width;
+                  var h = dimension.height;
+
+                  canvas.width = w;
+                  canvas.height = h;
+
+                  if (orientation == 3) {
+                      ctx.translate(w, h);
+                      ctx.rotate(180 * Math.PI / 180);
+                  }
+
+                  ctx.drawImage(image, x, y, w, h);
+              }
+              
+              if (orientation == 2 || orientation == 4) {
+                  var dimension = getAdjustedDimension(width, height, maxWidth, maxHeight);
+                  var w = dimension.width;
+                  var h = dimension.height;
+
+                  canvas.width = w;
+                  canvas.height = h;
+
+                  if (orientation == 2) {
+                      ctx.translate(w, 0);
+                      ctx.scale(-1, 1);
+                      ctx.rotate(0 * Math.PI / 180);
+                  }
+
+                  if (orientation == 4) {
+                      ctx.translate(0, h);
+                      ctx.scale(1, -1);
+                      ctx.rotate(0 * Math.PI / 180);
+                  }
+
+                  ctx.drawImage(image, x, y, w, h);
+              }
+              
+              if (orientation == 5 || orientation == 7) {
+                  var dimension = getAdjustedDimension(height, width, maxWidth, maxHeight);
+                  var w = dimension.width;
+                  var h = dimension.height;
+
+                  canvas.width = w;
+                  canvas.height = h;
+
+
+
+                  if (orientation == 5) {
+                      ctx.translate(0, 0);
+                      ctx.scale(-1, 1);
+                      ctx.rotate(90 * Math.PI / 180);
+                  }
+
+                  if (orientation == 7) {
+                      ctx.translate(w, h);
+                      ctx.scale(-1, 1);
+                      ctx.rotate(-90 * Math.PI / 180);
+                  }
+
+                  ctx.drawImage(image, x, y, h, w);
+              }
+
+              if (orientation == 6 || orientation == 8) {
+
+
+                  var dimension = getAdjustedDimension(height, width, maxWidth, maxHeight);
+                  var w = dimension.width;
+                  var h = dimension.height;
+
+                  canvas.width = w;
+                  canvas.height = h;
+
+
+
+                  if (orientation == 6) {
+                      ctx.translate(w, 0);
+                      ctx.rotate(90 * Math.PI / 180);
+                  }
+
+                  if (orientation == 8) {
+                      ctx.translate(0, h);
+                      ctx.rotate(-90 * Math.PI / 180);
+                  }
+
+                  ctx.drawImage(image, x, y, h, w);
+
+
+              }
+         
+      }
+
+
+      return function (origImage, options, orientation) {
         var maxHeight = options.resizeMaxHeight || 300;
         var maxWidth = options.resizeMaxWidth || 250;
         var quality = options.resizeQuality || 0.7;
@@ -93,20 +217,66 @@
 
         //draw image on canvas
         var ctx = canvas.getContext("2d");
-        ctx.drawImage(origImage, imgX, imgY, width, height);
+        if (!cover && orientation >= 1 && orientation <= 8)
+        {
+            fixOrientation(origImage ,orientation, canvas, ctx, width, height, maxWidth, maxHeight);
+        }
+        else
+        {
+            ctx.drawImage(origImage, imgX, imgY, width, height);
+        }
 
         // get the data from canvas as 70% jpg (or specified type).
         return canvas.toDataURL(type, quality);
       };
     }])
     .factory("fileToDataURL", ['$q',function($q) {
+      
+      function detectOrientation(imageData, callback) {
+              try {
+                  var view = new DataView(imageData);
+                  if (view.getUint16(0, false) != 0xFFD8) return callback(-2);
+                  var length = view.byteLength, offset = 2;
+                  while (offset < length) {
+                      var marker = view.getUint16(offset, false);
+                      offset += 2;
+                      if (marker == 0xFFE1) {
+                          var little = view.getUint16(offset += 8, false) == 0x4949;
+                          offset += view.getUint32(offset + 4, little);
+                          var tags = view.getUint16(offset, little);
+                          offset += 2;
+                          for (var i = 0; i < tags; i++)
+                              if (view.getUint16(offset + (i * 12), little) == 0x0112)
+                                  return callback(view.getUint16(offset + (i * 12) + 8, little));
+                      }
+                      else if ((marker & 0xFF00) != 0xFF00) break;
+                      else offset += view.getUint16(offset, false);
+                  }
+                  callback(-100);
+              }
+              catch (e) {
+                  console.error(e);
+                  callback(-100);
+              }
+          }
+          
       return function (file) {
         var deferred = $q.defer();
         var reader = new FileReader();
+        var binaryReader = new FileReader();
+        
         reader.readAsDataURL(file);
 
         reader.onload = function (e) {
-          deferred.resolve(e.target.result);
+          binaryReader.readAsArrayBuffer(file);
+                  binaryReader.onload = function (buffer) {
+                      detectOrientation(buffer.target.result, function (orientation) {
+                          var response = {};
+                          response.dataURL = e.target.result;
+                          response.orientation = orientation;
+                          deferred.resolve(response);
+                      });
+                  }
         };
         reader.onerror = function(e){
           deferred.reject(e);
@@ -114,6 +284,9 @@
         reader.onabort = function(e){
           deferred.reject(e);
         };
+        
+        binaryReader.onerror = reader.onerror;
+        binaryReader.onabort = reader.onabort;
 
         return deferred.promise;
       };
@@ -141,8 +314,9 @@
 
       function appendDataUri(model){
         return fileToDataURL(model.file)
-          .then(function (dataURL) {
-            model.dataURL = dataURL;
+          .then(function (response) {
+            model.dataURL = response.dataURL;
+              model.orientation = response.orientation;
             return model;
           });
       }
@@ -192,7 +366,10 @@
           model.url = URL.createObjectURL(model.file); //this is used to generate images/resize
           return createImage(model.url)
             .then(function(image) {
-              var dataURL = resizeImage(image, options);
+              
+              var dataURL = resizeImage(image, options, model.orientation);
+              console.log("resized image size : " + dataURL.length);
+                  
               var imageType = dataURL.substring(5, dataURL.indexOf(";"));
               model.resized = {
                 dataURL: dataURL,
@@ -251,6 +428,8 @@
         link: function (scope, element, attrs, ngModel) {
 
           var file_upload_element = new angular.element("<input type='file' accept='image/*' multiple>");
+          
+          
 
           element.on("click", function(){
             file_upload_element[0].click();
@@ -271,6 +450,14 @@
         link: function (scope, element, attrs, ngModel) {
 
           var file_upload_element = new angular.element("<input type='file' accept='image/*'>");
+          // if the consumer of the directive updates the model to be null, we should reset the file upload field
+          // TODO : same should be applied for "file upload multiple case
+          scope.$watch(attrs['ngModel'], function (v) {
+                      if (v === null) {
+                          file_upload_element.wrap('<form>').closest('form').get(0).reset();
+                          file_upload_element.unwrap();
+                      }
+                  });
 
           element.on("click", function(){
             file_upload_element[0].click();
